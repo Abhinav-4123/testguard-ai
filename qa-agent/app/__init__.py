@@ -1,6 +1,16 @@
 """QA Testing Agent - AI-powered autonomous testing"""
-from .agent import QAAgent
-from .browser import BrowserController
-from .reporter import ReportGenerator
 
 __all__ = ["QAAgent", "BrowserController", "ReportGenerator"]
+
+
+def __getattr__(name):
+    if name == "QAAgent":
+        from .agent import QAAgent
+        return QAAgent
+    if name == "BrowserController":
+        from .browser import BrowserController
+        return BrowserController
+    if name == "ReportGenerator":
+        from .reporter import ReportGenerator
+        return ReportGenerator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

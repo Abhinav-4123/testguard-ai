@@ -3,9 +3,12 @@ Browser Controller - Playwright-based browser automation
 """
 import os
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+
+logger = logging.getLogger("testguard.browser")
 
 
 class BrowserController:
@@ -48,14 +51,21 @@ class BrowserController:
 
     async def stop(self):
         """Stop the browser"""
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception as e:
+            logger.warning("Error stopping browser: %s", e)
 
     async def navigate(self, url: str):
         """Navigate to a URL"""
-        await self.page.goto(url, wait_until="networkidle")
+        try:
+            await self.page.goto(url, wait_until="networkidle", timeout=30000)
+        except Exception as e:
+            logger.warning("Navigation to %s failed with networkidle, retrying with load: %s", url, e)
+            await self.page.goto(url, wait_until="load", timeout=30000)
 
     async def click(self, selector: str, by_text: bool = False):
         """Click an element"""
@@ -195,7 +205,8 @@ VISIBLE TEXT:
             if element:
                 return await element.is_visible()
             return False
-        except Exception:
+        except Exception as e:
+            logger.debug("check_element failed for %s: %s", selector, e)
             return False
 
     async def get_screenshot_base64(self) -> str:

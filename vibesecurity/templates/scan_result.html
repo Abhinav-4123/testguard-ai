@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Scan Results - VibeSecurity</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {{auto_refresh}}
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #0a0a0f; color: #fff; min-height: 100vh; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+        nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+        .logo { font-size: 24px; font-weight: 800; }
+        .gradient-text { background: linear-gradient(135deg, #00ff88, #00ccff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .btn { padding: 10px 20px; border-radius: 8px; font-size: 14px; cursor: pointer; border: none; text-decoration: none; }
+        .btn-ghost { background: transparent; border: 1px solid #333; color: #fff; }
+        .summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 30px; }
+        .summary-card { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; text-align: center; }
+        .summary-card h4 { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 8px; }
+        .summary-card .value { font-size: 28px; font-weight: 700; }
+        .vuln { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .vuln-header { display: flex; justify-content: space-between; align-items: center; }
+        .vuln h4 { font-size: 14px; }
+        .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; color: #000; }
+        .spinner { width: 16px; height: 16px; border: 2px solid; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <div class="logo"><span class="gradient-text">Vibe</span>Security</div>
+            <a href="/dashboard" class="btn btn-ghost">Back to Dashboard</a>
+        </nav>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:30px;">
+            <div>
+                <h1 style="font-size:24px;margin-bottom:8px;">Scan Results</h1>
+                <p style="color:#888;">Target: <code style="color:#00ccff;">{{scan_target}}</code></p>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="color:{{status_color}};font-weight:600;">{{scan_status}}</span>
+                {{spinner_html}}
+            </div>
+        </div>
+
+        <div class="summary">
+            <div class="summary-card"><h4>Total</h4><div class="value" style="color:#fff;">{{total}}</div></div>
+            <div class="summary-card"><h4>Critical</h4><div class="value" style="color:#ff0000;">{{critical}}</div></div>
+            <div class="summary-card"><h4>High</h4><div class="value" style="color:#ff4444;">{{high}}</div></div>
+            <div class="summary-card"><h4>Medium</h4><div class="value" style="color:#ffcc00;">{{medium}}</div></div>
+            <div class="summary-card"><h4>Low</h4><div class="value" style="color:#00ccff;">{{low}}</div></div>
+        </div>
+
+        <h2 style="font-size:18px;margin-bottom:16px;">Findings</h2>
+        {{vulns_html}}
+    </div>
+</body>
+</html>

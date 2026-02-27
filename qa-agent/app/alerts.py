@@ -3,12 +3,15 @@ Alerting System - Slack, Email, and Webhook notifications
 """
 import os
 import asyncio
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from typing import Dict, List, Optional
 import httpx
+
+logger = logging.getLogger("testguard.alerts")
 
 
 class AlertManager:
@@ -56,7 +59,10 @@ class AlertManager:
             ))
 
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error("Alert channel %d failed: %s", i, result)
 
     async def _send_slack(
         self,
@@ -77,6 +83,8 @@ class AlertManager:
         errors_text = ""
         if summary.get("errors"):
             errors_text = "\n".join([f"• {e.get('error', 'Unknown')}" for e in summary["errors"][:5]])
+
+        app_url = os.getenv("APP_URL", "https://app.vibesecurity.in")
 
         blocks = [
             {
@@ -112,7 +120,7 @@ class AlertManager:
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "View Full Report"},
-                    "url": f"https://app.testguard.ai/report/{test_id}"
+                    "url": f"{app_url}/report/{test_id}"
                 }
             ]
         })
@@ -124,8 +132,14 @@ class AlertManager:
             }]
         }
 
-        async with httpx.AsyncClient() as client:
-            await client.post(webhook, json=payload)
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(webhook, json=payload)
+                resp.raise_for_status()
+                logger.info("Slack alert sent for test %s", test_id)
+        except httpx.HTTPError as e:
+            logger.error("Slack webhook failed for test %s: %s", test_id, e)
+            raise
 
     async def _send_email(
         self,
@@ -139,12 +153,13 @@ class AlertManager:
     ):
         """Send email notification"""
         if not self.smtp_user or not self.smtp_pass:
+            logger.warning("SMTP not configured, skipping email alert for test %s", test_id)
             return
 
         is_failure = status == "failed" or summary.get("failed", 0) > 0
         status_text = "FAILED" if is_failure else "PASSED"
 
-        subject = f"{'🔴' if is_failure else '🟢'} QA Test {status_text}: {client_name}"
+        subject = f"QA Test {status_text}: {client_name}"
 
         errors_html = ""
         if summary.get("errors"):
@@ -153,47 +168,30 @@ class AlertManager:
                 for e in summary["errors"][:10]
             ]) + "</ul>"
 
+        app_url = os.getenv("APP_URL", "https://app.vibesecurity.in")
+
         html = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: {'#ff4444' if is_failure else '#00cc66'}; color: white; padding: 20px; text-align: center;">
                 <h1 style="margin: 0;">QA Test {status_text}</h1>
             </div>
-
             <div style="padding: 20px; background: #f5f5f5;">
                 <table style="width: 100%;">
-                    <tr>
-                        <td><strong>Client:</strong></td>
-                        <td>{client_name}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>URL:</strong></td>
-                        <td><a href="{url}">{url}</a></td>
-                    </tr>
-                    <tr>
-                        <td><strong>Test ID:</strong></td>
-                        <td><code>{test_id}</code></td>
-                    </tr>
-                    <tr>
-                        <td><strong>Steps Passed:</strong></td>
-                        <td>{summary.get('passed', 0)}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Steps Failed:</strong></td>
-                        <td>{summary.get('failed', 0)}</td>
-                    </tr>
+                    <tr><td><strong>Client:</strong></td><td>{client_name}</td></tr>
+                    <tr><td><strong>URL:</strong></td><td>{url}</td></tr>
+                    <tr><td><strong>Test ID:</strong></td><td><code>{test_id}</code></td></tr>
+                    <tr><td><strong>Steps Passed:</strong></td><td>{summary.get('passed', 0)}</td></tr>
+                    <tr><td><strong>Steps Failed:</strong></td><td>{summary.get('failed', 0)}</td></tr>
                 </table>
             </div>
-
             {f'<div style="padding: 20px;"><h3>Errors Found:</h3>{errors_html}</div>' if errors_html else ''}
-
             <div style="padding: 20px; text-align: center;">
-                <a href="https://app.testguard.ai/report/{test_id}"
+                <a href="{app_url}/report/{test_id}"
                    style="background: #00cc66; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px;">
                     View Full Report
                 </a>
             </div>
-
             <div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">
                 <p>TestGuard AI - Autonomous QA Testing</p>
             </div>
@@ -205,22 +203,21 @@ class AlertManager:
         msg["Subject"] = subject
         msg["From"] = self.from_email
         msg["To"] = to
-
         msg.attach(MIMEText(html, "html"))
 
-        # Attach screenshots if available
         if screenshots:
-            for i, screenshot_path in enumerate(screenshots[:3]):  # Max 3 screenshots
+            for i, screenshot_path in enumerate(screenshots[:3]):
                 try:
                     with open(screenshot_path, "rb") as f:
                         img = MIMEImage(f.read())
                         img.add_header("Content-ID", f"<screenshot{i}>")
                         img.add_header("Content-Disposition", "attachment", filename=f"screenshot_{i}.png")
                         msg.attach(img)
-                except Exception:
-                    pass
+                except FileNotFoundError:
+                    logger.warning("Screenshot not found: %s", screenshot_path)
+                except Exception as e:
+                    logger.warning("Failed to attach screenshot %s: %s", screenshot_path, e)
 
-        # Send in thread pool to not block
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._send_smtp, msg, to)
 
@@ -232,8 +229,9 @@ class AlertManager:
             server.login(self.smtp_user, self.smtp_pass)
             server.sendmail(self.from_email, to, msg.as_string())
             server.quit()
+            logger.info("Email sent to %s", to)
         except Exception as e:
-            print(f"Failed to send email: {e}")
+            logger.error("Failed to send email to %s: %s", to, e)
 
 
 # Daily summary email template
@@ -253,8 +251,6 @@ DAILY_SUMMARY_TEMPLATE = """
         table { width: 100%; border-collapse: collapse; margin: 20px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f5f5f5; }
-        .status-pass { color: #00cc66; }
-        .status-fail { color: #ff4444; }
     </style>
 </head>
 <body>
@@ -262,45 +258,16 @@ DAILY_SUMMARY_TEMPLATE = """
         <h1>Daily QA Summary</h1>
         <p>{date}</p>
     </div>
-
     <div class="stats">
-        <div class="stat">
-            <div class="stat-value">{total}</div>
-            <div class="stat-label">Total Tests</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value passed">{passed}</div>
-            <div class="stat-label">Passed</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value failed">{failed}</div>
-            <div class="stat-label">Failed</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{success_rate}%</div>
-            <div class="stat-label">Success Rate</div>
-        </div>
+        <div class="stat"><div class="stat-value">{total}</div><div class="stat-label">Total Tests</div></div>
+        <div class="stat"><div class="stat-value passed">{passed}</div><div class="stat-label">Passed</div></div>
+        <div class="stat"><div class="stat-value failed">{failed}</div><div class="stat-label">Failed</div></div>
+        <div class="stat"><div class="stat-value">{success_rate}%</div><div class="stat-label">Success Rate</div></div>
     </div>
-
     <table>
-        <thead>
-            <tr>
-                <th>Client</th>
-                <th>URL</th>
-                <th>Objective</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows}
-        </tbody>
+        <thead><tr><th>Client</th><th>URL</th><th>Objective</th><th>Status</th></tr></thead>
+        <tbody>{rows}</tbody>
     </table>
-
-    <div style="text-align: center; padding: 20px;">
-        <a href="https://app.testguard.ai/dashboard" style="background: #00cc66; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px;">
-            View Dashboard
-        </a>
-    </div>
 </body>
 </html>
 """

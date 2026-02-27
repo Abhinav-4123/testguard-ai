@@ -85,9 +85,9 @@ TEST_DATA = {
     "address": "123 Test Street",
     "city": "Test City",
     "zip": "12345",
-    "card_number": "4111111111111111",  # Test card
-    "card_exp": "12/28",
-    "card_cvv": "123"
+    "card_number": os.getenv("TEST_CARD_NUMBER", "4111111111111111"),
+    "card_exp": os.getenv("TEST_CARD_EXP", "12/28"),
+    "card_cvv": os.getenv("TEST_CARD_CVV", "123"),
 }
 
 

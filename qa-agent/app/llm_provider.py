@@ -4,8 +4,11 @@ Auto-fallback: tries each provider in order until one works
 """
 import os
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger("testguard.llm")
 
 
 class LLMProvider(ABC):
@@ -192,8 +195,8 @@ class GeminiProvider(LLMProvider):
                             # Last resort: type conversion
                             args_dict = dict(raw_args) if raw_args else {}
                 except Exception as e:
-                    import traceback
-                    args_dict = {"_parse_error": str(e), "_traceback": traceback.format_exc()}
+                    logger.warning("Failed to parse Gemini function call args: %s", e)
+                    args_dict = {}
 
                 result["content"].append({
                     "type": "tool_use",
@@ -435,11 +438,8 @@ class MultiLLMProvider:
                 return result
 
             except Exception as e:
-                import traceback
                 error_detail = f"{provider_name}: {str(e)}"
-                # Log full traceback for debugging
-                print(f"[LLM ERROR] {provider_name}: {str(e)}")
-                print(traceback.format_exc())
+                logger.error("LLM provider %s failed: %s", provider_name, e, exc_info=True)
                 errors.append(error_detail)
                 continue
 

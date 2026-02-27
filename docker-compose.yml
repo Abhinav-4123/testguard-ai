@@ -8,25 +8,23 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    env_file:
+      - ./vibesecurity/.env
     volumes:
       - vibesecurity_data:/app/data
     restart: unless-stopped
 
-  # TestGuard AI - QA Testing Platform (Port 8001)
+  # TestGuard AI - QA Testing Platform (Port 8001 -> 8080)
   testguard:
     build:
       context: ./qa-agent
       dockerfile: Dockerfile
     ports:
       - "8001:8080"
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - ./qa-agent/.env
     volumes:
+      - testguard_data:/app/data
       - testguard_reports:/app/reports
       - testguard_screenshots:/app/screenshots
     restart: unless-stopped
@@ -35,5 +33,6 @@ services:
 
 volumes:
   vibesecurity_data:
+  testguard_data:
   testguard_reports:
   testguard_screenshots:

@@ -4,12 +4,15 @@ Runs configured tests every morning and sends reports
 """
 import os
 import asyncio
+import logging
 import httpx
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from typing import List, Dict
+
+logger = logging.getLogger("testguard.scheduler")
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
@@ -32,15 +35,13 @@ DAILY_TESTS = [
 
 async def run_daily_tests():
     """Run all configured daily tests"""
-    print(f"\n{'='*60}")
-    print(f"Daily QA Test Run - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'='*60}\n")
+    logger.info("Daily QA Test Run - %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     results = []
 
     async with httpx.AsyncClient(timeout=300) as client:
         for test_config in DAILY_TESTS:
-            print(f"\nTesting: {test_config['client']} - {test_config['url']}")
+            logger.info("Testing: %s - %s", test_config['client'], test_config['url'])
 
             try:
                 # Start test
@@ -86,7 +87,7 @@ async def run_daily_tests():
                     await send_success_notification(result)
 
             except Exception as e:
-                print(f"Error testing {test_config['client']}: {e}")
+                logger.error("Error testing %s: %s", test_config['client'], e)
                 results.append({
                     "client": test_config["client"],
                     "url": test_config["url"],
@@ -134,7 +135,7 @@ Full Report:
                     ]
                 })
         except Exception as e:
-            print(f"Failed to send Slack alert: {e}")
+            logger.error("Failed to send Slack alert: %s", e)
 
     # Send email
     if config.get("notify_email"):
@@ -156,8 +157,8 @@ async def send_success_notification(result: Dict):
                 await client.post(config["notify_slack"], json={
                     "text": f":white_check_mark: QA Test Passed for {result['client']}"
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Slack notification failed: %s", e)
 
 
 async def send_email(to: str, subject: str, body: str):
@@ -169,7 +170,7 @@ async def send_email(to: str, subject: str, body: str):
     from_email = os.getenv("FROM_EMAIL", smtp_user)
 
     if not smtp_user or not smtp_pass:
-        print("Email not configured, skipping email notification")
+        logger.warning("Email not configured, skipping email notification")
         return
 
     msg = MIMEMultipart()
@@ -184,9 +185,9 @@ async def send_email(to: str, subject: str, body: str):
         server.login(smtp_user, smtp_pass)
         server.sendmail(from_email, to, msg.as_string())
         server.quit()
-        print(f"Email sent to {to}")
+        logger.info("Email sent to %s", to)
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        logger.error("Failed to send email: %s", e)
 
 
 async def generate_summary(results: List[Dict]):
@@ -219,7 +220,7 @@ async def generate_summary(results: List[Dict]):
     with open(f"reports/daily_summary_{timestamp.strftime('%Y%m%d')}.md", "w") as f:
         f.write(summary)
 
-    print(summary)
+    logger.info("Daily summary:\n%s", summary)
 
 
 if __name__ == "__main__":

@@ -605,12 +605,60 @@
         }
     };
 
+    // ============== API KEY MANAGEMENT ==============
+    function getApiKey() {
+        return localStorage.getItem('tg_api_key');
+    }
+
+    function setApiKey(key) {
+        localStorage.setItem('tg_api_key', key);
+    }
+
+    function promptApiKey() {
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay active';
+        modal.id = 'apiKeyModal';
+        modal.innerHTML = `
+            <div class="modal">
+                <div class="modal-header">
+                    <h2 class="modal-title">API Key Required</h2>
+                </div>
+                <div class="modal-body">
+                    <p style="color:var(--text-secondary);margin-bottom:16px;">Enter your API key to access the dashboard. Generate one at <code>/api/keys/generate</code>.</p>
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input type="text" id="apiKeyInput" class="form-input" placeholder="tg_live_..." style="font-family:monospace;">
+                    </div>
+                    <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveApiKey()">Save & Continue</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        document.getElementById('apiKeyInput').focus();
+    }
+
+    function saveApiKey() {
+        const key = document.getElementById('apiKeyInput').value.trim();
+        if (!key) { showToast('Please enter an API key', 'error'); return; }
+        setApiKey(key);
+        document.getElementById('apiKeyModal')?.remove();
+        init();
+    }
+
     // ============== API SERVICE ==============
     const API_BASE = window.location.origin;
 
     const api = {
+        _headers() {
+            const h = { 'Content-Type': 'application/json' };
+            const key = getApiKey();
+            if (key) h['X-API-Key'] = key;
+            return h;
+        },
+
         async get(endpoint) {
-            const res = await fetch(`${API_BASE}${endpoint}`);
+            const res = await fetch(`${API_BASE}${endpoint}`, { headers: this._headers() });
+            if (res.status === 401 || res.status === 403) { promptApiKey(); throw new Error('API key required'); }
             if (!res.ok) throw new Error(`API Error: ${res.status}`);
             return res.json();
         },
@@ -618,9 +666,10 @@
         async post(endpoint, data) {
             const res = await fetch(`${API_BASE}${endpoint}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this._headers(),
                 body: JSON.stringify(data)
             });
+            if (res.status === 401 || res.status === 403) { promptApiKey(); throw new Error('API key required'); }
             if (!res.ok) throw new Error(`API Error: ${res.status}`);
             return res.json();
         }
@@ -1020,6 +1069,12 @@
 
     // ============== INIT ==============
     async function init() {
+        // Check for API key
+        if (!getApiKey()) {
+            promptApiKey();
+            return;
+        }
+
         // Set up navigation
         document.querySelectorAll('.nav-item[data-view]').forEach(el => {
             el.addEventListener('click', () => switchView(el.dataset.view));

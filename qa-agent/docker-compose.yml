@@ -4,27 +4,16 @@ services:
   qa-agent:
     build: .
     ports:
-      - "8000:8000"
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - "8000:8080"
+    env_file:
+      - .env
     volumes:
       - ./reports:/app/reports
       - ./screenshots:/app/screenshots
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-
-  # Optional: Redis for production (persistent test storage)
-  # redis:
-  #   image: redis:alpine
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis_data:/data
-
-# volumes:
-#   redis_data:

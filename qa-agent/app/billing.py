@@ -3,11 +3,16 @@ Stripe Billing Integration
 Handles subscriptions, payments, and usage tracking
 """
 import os
+import logging
 from datetime import datetime
 from typing import Optional, Dict, List
 from fastapi import APIRouter, HTTPException, Request, Header
 from pydantic import BaseModel
 import stripe
+
+from . import database as db
+
+logger = logging.getLogger("testguard.billing")
 
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -40,9 +45,6 @@ PLANS = {
     }
 }
 
-# In-memory customer store (use database in production)
-customers = {}
-
 
 class CreateCustomerRequest(BaseModel):
     email: str
@@ -55,18 +57,6 @@ class CreateSubscriptionRequest(BaseModel):
     plan: str  # starter, growth, enterprise
 
 
-class Customer(BaseModel):
-    id: str
-    email: str
-    name: str
-    company: Optional[str]
-    stripe_customer_id: str
-    subscription_id: Optional[str]
-    plan: Optional[str]
-    status: str  # active, trialing, canceled, past_due
-    created_at: datetime
-
-
 @router.get("/plans")
 async def get_plans():
     """Get available pricing plans"""
@@ -77,29 +67,35 @@ async def get_plans():
 async def create_customer(request: CreateCustomerRequest):
     """Create a new customer in Stripe"""
     try:
-        # Create Stripe customer
         stripe_customer = stripe.Customer.create(
             email=request.email,
             name=request.name,
             metadata={"company": request.company or ""}
         )
 
-        customer = Customer(
-            id=stripe_customer.id[:8],
+        import uuid
+        customer_id = str(uuid.uuid4())
+        await db.save_customer(
+            customer_id=customer_id,
             email=request.email,
             name=request.name,
             company=request.company,
             stripe_customer_id=stripe_customer.id,
-            subscription_id=None,
-            plan=None,
-            status="created",
-            created_at=datetime.now()
         )
 
-        customers[customer.id] = customer
-        return customer
+        logger.info("Customer created: %s (%s)", customer_id, request.email)
+
+        return {
+            "id": customer_id,
+            "email": request.email,
+            "name": request.name,
+            "company": request.company,
+            "stripe_customer_id": stripe_customer.id,
+            "status": "created",
+        }
 
     except stripe.error.StripeError as e:
+        logger.error("Stripe customer creation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -109,23 +105,27 @@ async def create_subscription(request: CreateSubscriptionRequest):
     if request.plan not in PLANS:
         raise HTTPException(status_code=400, detail="Invalid plan")
 
-    customer = customers.get(request.customer_id)
+    customer = await db.get_customer(request.customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
     try:
-        # Create subscription with 7-day trial
         subscription = stripe.Subscription.create(
-            customer=customer.stripe_customer_id,
+            customer=customer["stripe_customer_id"],
             items=[{"price": PLANS[request.plan]["price_id"]}],
             trial_period_days=7,
             payment_behavior="default_incomplete",
             expand=["latest_invoice.payment_intent"]
         )
 
-        customer.subscription_id = subscription.id
-        customer.plan = request.plan
-        customer.status = subscription.status
+        await db.update_customer(
+            request.customer_id,
+            subscription_id=subscription.id,
+            plan=request.plan,
+            status=subscription.status,
+        )
+
+        logger.info("Subscription created: %s for customer %s", subscription.id, request.customer_id)
 
         return {
             "subscription_id": subscription.id,
@@ -135,6 +135,7 @@ async def create_subscription(request: CreateSubscriptionRequest):
         }
 
     except stripe.error.StripeError as e:
+        logger.error("Stripe subscription creation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -145,6 +146,7 @@ async def create_checkout_session(plan: str, customer_email: str):
         raise HTTPException(status_code=400, detail="Invalid plan")
 
     try:
+        app_url = os.getenv("APP_URL", "https://app.vibesecurity.in")
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             line_items=[{
@@ -152,8 +154,8 @@ async def create_checkout_session(plan: str, customer_email: str):
                 "quantity": 1
             }],
             mode="subscription",
-            success_url=os.getenv("APP_URL", "https://app.testguard.ai") + "/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url=os.getenv("APP_URL", "https://app.testguard.ai") + "/pricing",
+            success_url=app_url + "/success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=app_url + "/pricing",
             customer_email=customer_email,
             subscription_data={
                 "trial_period_days": 7
@@ -163,6 +165,7 @@ async def create_checkout_session(plan: str, customer_email: str):
         return {"checkout_url": session.url, "session_id": session.id}
 
     except stripe.error.StripeError as e:
+        logger.error("Stripe checkout session failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -180,64 +183,51 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Handle events
     if event.type == "customer.subscription.created":
-        subscription = event.data.object
-        await handle_subscription_created(subscription)
-
+        await handle_subscription_created(event.data.object)
     elif event.type == "customer.subscription.updated":
-        subscription = event.data.object
-        await handle_subscription_updated(subscription)
-
+        await handle_subscription_updated(event.data.object)
     elif event.type == "customer.subscription.deleted":
-        subscription = event.data.object
-        await handle_subscription_deleted(subscription)
-
+        await handle_subscription_deleted(event.data.object)
     elif event.type == "invoice.paid":
-        invoice = event.data.object
-        await handle_invoice_paid(invoice)
-
+        await handle_invoice_paid(event.data.object)
     elif event.type == "invoice.payment_failed":
-        invoice = event.data.object
-        await handle_payment_failed(invoice)
+        await handle_payment_failed(event.data.object)
+    else:
+        logger.info("Unhandled Stripe event: %s", event.type)
 
     return {"status": "success"}
 
 
 async def handle_subscription_created(subscription):
     """Handle new subscription"""
-    print(f"New subscription: {subscription.id}")
-    # Update customer status, send welcome email, etc.
+    logger.info("New subscription: %s (customer: %s)", subscription.id, subscription.customer)
 
 
 async def handle_subscription_updated(subscription):
     """Handle subscription update (upgrade/downgrade)"""
-    print(f"Subscription updated: {subscription.id} -> {subscription.status}")
-    # Update customer plan, adjust limits, etc.
+    logger.info("Subscription updated: %s -> %s", subscription.id, subscription.status)
 
 
 async def handle_subscription_deleted(subscription):
     """Handle subscription cancellation"""
-    print(f"Subscription canceled: {subscription.id}")
-    # Disable testing, send churn email, etc.
+    logger.info("Subscription canceled: %s", subscription.id)
 
 
 async def handle_invoice_paid(invoice):
     """Handle successful payment"""
-    print(f"Invoice paid: {invoice.id}")
-    # Update billing records, send receipt, etc.
+    logger.info("Invoice paid: %s (amount: %s)", invoice.id, invoice.amount_paid)
 
 
 async def handle_payment_failed(invoice):
     """Handle failed payment"""
-    print(f"Payment failed: {invoice.id}")
-    # Send dunning email, pause service, etc.
+    logger.warning("Payment failed: %s (customer: %s)", invoice.id, invoice.customer)
 
 
 @router.get("/customers/{customer_id}")
 async def get_customer(customer_id: str):
     """Get customer details"""
-    customer = customers.get(customer_id)
+    customer = await db.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
@@ -246,27 +236,32 @@ async def get_customer(customer_id: str):
 @router.post("/customers/{customer_id}/cancel")
 async def cancel_subscription(customer_id: str):
     """Cancel a customer's subscription"""
-    customer = customers.get(customer_id)
-    if not customer or not customer.subscription_id:
+    customer = await db.get_customer(customer_id)
+    if not customer or not customer.get("subscription_id"):
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     try:
-        stripe.Subscription.delete(customer.subscription_id)
-        customer.status = "canceled"
+        stripe.Subscription.delete(customer["subscription_id"])
+        await db.update_customer(customer_id, status="canceled")
+        logger.info("Subscription canceled for customer: %s", customer_id)
         return {"status": "canceled"}
     except stripe.error.StripeError as e:
+        logger.error("Stripe cancellation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/usage/{customer_id}")
 async def get_usage(customer_id: str):
     """Get customer's usage statistics"""
-    # In production, pull from database
+    usage = await db.get_customer_usage(customer_id)
+    customer = await db.get_customer(customer_id)
+    plan_name = customer.get("plan", "starter") if customer else "starter"
+    plan = PLANS.get(plan_name, PLANS["starter"])
+
     return {
         "customer_id": customer_id,
         "period": "current",
-        "tests_run": 45,
-        "tests_limit": PLANS.get("growth", {}).get("flows", 10) * 30,
-        "alerts_sent": 3,
-        "uptime_percentage": 99.2
+        "tests_run": usage.get("tests_run", 0),
+        "tests_limit": plan["flows"] * 30 if plan["flows"] > 0 else -1,
+        "alerts_sent": usage.get("alerts_sent", 0),
     }
